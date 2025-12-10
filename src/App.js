@@ -10,6 +10,9 @@ const LastFmRaceChart = () => {
   const [allWeeksData, setAllWeeksData] = useState([]);
   const [progress, setProgress] = useState('');
   const [animationInterval, setAnimationInterval] = useState(null);
+  const [activeTab, setActiveTab] = useState('artists'); // 'artists', 'albums', or 'tracks'
+  const [allAlbumsData, setAllAlbumsData] = useState([]);
+  const [allTracksData, setAllTracksData] = useState([]);
 
   const colors = [
     '#FF1744', '#00E676', '#2979FF', '#FF9100', '#E91E63',
@@ -45,8 +48,9 @@ const LastFmRaceChart = () => {
       const endTimestamp = Math.floor(Date.now() / 1000);
       const secondsInWeek = 604800;
 
-      const DICT = {};
-      const SET = new Set();
+      const DICT_ARTISTS = {};
+      const DICT_ALBUMS = {};
+      const DICT_TRACKS = {};
       const dateRanges = [];
       
       let currentTime = joinTimestamp;
@@ -61,20 +65,39 @@ const LastFmRaceChart = () => {
         weekNumber++;
         
         try {
-          const weekUrl = `/api/lastfm?method=user.getweeklyartistchart&user=${username}&from=${currentTime}&to=${currentTime + secondsInWeek}`;
-          const response = await fetch(weekUrl);
-          const data = await response.json();
+          // Fetch artists, albums, and tracks for this week
+          const [artistsResponse, albumsResponse, tracksResponse] = await Promise.all([
+            fetch(`/api/lastfm?method=user.getweeklyartistchart&user=${username}&from=${currentTime}&to=${currentTime + secondsInWeek}`),
+            fetch(`/api/lastfm?method=user.getweeklyalbumchart&user=${username}&from=${currentTime}&to=${currentTime + secondsInWeek}`),
+            fetch(`/api/lastfm?method=user.getweeklytrackchart&user=${username}&from=${currentTime}&to=${currentTime + secondsInWeek}`)
+          ]);
 
-          if (data.error) {
-            console.warn('API Error at week', weekNumber, ':', data.message);
+          const [artistsData, albumsData, tracksData] = await Promise.all([
+            artistsResponse.json(),
+            albumsResponse.json(),
+            tracksResponse.json()
+          ]);
+
+          if (artistsData.error || albumsData.error || tracksData.error) {
+            console.warn('API Error at week', weekNumber);
             consecutiveErrors++;
             
             const datetime = new Date(currentTime * 1000);
             dateRanges.push(datetime.toISOString().split('T')[0]);
             
-            for (const artist in DICT) {
-              while (DICT[artist].length <= weekNumber) {
-                DICT[artist].push(0);
+            for (const artist in DICT_ARTISTS) {
+              while (DICT_ARTISTS[artist].length <= weekNumber) {
+                DICT_ARTISTS[artist].push(0);
+              }
+            }
+            for (const album in DICT_ALBUMS) {
+              while (DICT_ALBUMS[album].length <= weekNumber) {
+                DICT_ALBUMS[album].push(0);
+              }
+            }
+            for (const track in DICT_TRACKS) {
+              while (DICT_TRACKS[track].length <= weekNumber) {
+                DICT_TRACKS[track].push(0);
               }
             }
             
@@ -85,7 +108,7 @@ const LastFmRaceChart = () => {
               break;
             }
             
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 200));
             continue;
           }
 
@@ -94,31 +117,86 @@ const LastFmRaceChart = () => {
           const datetime = new Date(currentTime * 1000);
           dateRanges.push(datetime.toISOString().split('T')[0]);
 
-          setProgress(`Fetching week ${weekNumber}... (${dateRanges[dateRanges.length - 1]})`);
+          // Get top items for progress display — simplified (album/track names only)
+          const topArtist = artistsData.weeklyartistchart?.artist?.[0]?.name || 'N/A';
+          const topAlbumName = albumsData.weeklyalbumchart?.album?.[0]?.name || 'N/A';
+          const topTrackName = tracksData.weeklytrackchart?.track?.[0]?.name || 'N/A';
 
-          if (data.weeklyartistchart && data.weeklyartistchart.artist) {
-            for (const artistDict of data.weeklyartistchart.artist) {
+          // FIX: show on separate lines, and show only album/track names (omit artist)
+          setProgress(`Fetching week ${weekNumber}... (${dateRanges[dateRanges.length - 1]})
+Top Artist: ${topArtist}
+Top Album: ${topAlbumName}
+Top Track: ${topTrackName}`);
+
+          // Process artists
+          if (artistsData.weeklyartistchart && artistsData.weeklyartistchart.artist) {
+            for (const artistDict of artistsData.weeklyartistchart.artist) {
               const currName = artistDict.name;
-              SET.add(currName);
 
-              if (!DICT[currName]) {
-                DICT[currName] = new Array(weekNumber).fill(0);
+              if (!DICT_ARTISTS[currName]) {
+                DICT_ARTISTS[currName] = new Array(weekNumber).fill(0);
               }
 
-              DICT[currName].push(parseInt(artistDict.playcount));
+              DICT_ARTISTS[currName].push(parseInt(artistDict.playcount));
             }
           }
 
-          for (const artist in DICT) {
-            while (DICT[artist].length <= weekNumber) {
-              DICT[artist].push(0);
+          // Process albums (KEEP internal key as "Artist - Album" but safely extract artist)
+          if (albumsData.weeklyalbumchart && albumsData.weeklyalbumchart.album) {
+            for (const albumDict of albumsData.weeklyalbumchart.album) {
+              const artistName =
+                typeof albumDict.artist === 'string'
+                  ? albumDict.artist
+                  : albumDict.artist?.['#text'] || '';
+
+              const albumKey = `${artistName} - ${albumDict.name}`;
+
+              if (!DICT_ALBUMS[albumKey]) {
+                DICT_ALBUMS[albumKey] = new Array(weekNumber).fill(0);
+              }
+
+              DICT_ALBUMS[albumKey].push(parseInt(albumDict.playcount));
+            }
+          }
+
+          // Process tracks (KEEP internal key as "Artist - Track" but safely extract artist)
+          if (tracksData.weeklytrackchart && tracksData.weeklytrackchart.track) {
+            for (const trackDict of tracksData.weeklytrackchart.track) {
+              const artistName =
+                typeof trackDict.artist === 'string'
+                  ? trackDict.artist
+                  : trackDict.artist?.['#text'] || '';
+
+              const trackKey = `${artistName} - ${trackDict.name}`;
+
+              if (!DICT_TRACKS[trackKey]) {
+                DICT_TRACKS[trackKey] = new Array(weekNumber).fill(0);
+              }
+
+              DICT_TRACKS[trackKey].push(parseInt(trackDict.playcount));
+            }
+          }
+
+          for (const artist in DICT_ARTISTS) {
+            while (DICT_ARTISTS[artist].length <= weekNumber) {
+              DICT_ARTISTS[artist].push(0);
+            }
+          }
+          for (const album in DICT_ALBUMS) {
+            while (DICT_ALBUMS[album].length <= weekNumber) {
+              DICT_ALBUMS[album].push(0);
+            }
+          }
+          for (const track in DICT_TRACKS) {
+            while (DICT_TRACKS[track].length <= weekNumber) {
+              DICT_TRACKS[track].push(0);
             }
           }
 
           currentTime += secondsInWeek;
           
-          if (weekNumber % 10 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+          if (weekNumber % 50 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 50));
           }
         } catch (err) {
           console.error('Error fetching week', weekNumber, ':', err);
@@ -127,9 +205,19 @@ const LastFmRaceChart = () => {
           const datetime = new Date(currentTime * 1000);
           dateRanges.push(datetime.toISOString().split('T')[0]);
           
-          for (const artist in DICT) {
-            while (DICT[artist].length <= weekNumber) {
-              DICT[artist].push(0);
+          for (const artist in DICT_ARTISTS) {
+            while (DICT_ARTISTS[artist].length <= weekNumber) {
+              DICT_ARTISTS[artist].push(0);
+            }
+          }
+          for (const album in DICT_ALBUMS) {
+            while (DICT_ALBUMS[album].length <= weekNumber) {
+              DICT_ALBUMS[album].push(0);
+            }
+          }
+          for (const track in DICT_TRACKS) {
+            while (DICT_TRACKS[track].length <= weekNumber) {
+              DICT_TRACKS[track].push(0);
             }
           }
           
@@ -140,41 +228,102 @@ const LastFmRaceChart = () => {
             break;
           }
           
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
 
       setProgress('Processing data...');
 
-      for (const artistName in DICT) {
-        for (let i = 1; i < DICT[artistName].length; i++) {
-          DICT[artistName][i] = DICT[artistName][i - 1] + DICT[artistName][i];
+      // Calculate cumulative sums for artists
+      for (const artistName in DICT_ARTISTS) {
+        for (let i = 1; i < DICT_ARTISTS[artistName].length; i++) {
+          DICT_ARTISTS[artistName][i] = DICT_ARTISTS[artistName][i - 1] + DICT_ARTISTS[artistName][i];
         }
       }
 
-      const weeklyChartData = [];
+      // Calculate cumulative sums for albums
+      for (const albumName in DICT_ALBUMS) {
+        for (let i = 1; i < DICT_ALBUMS[albumName].length; i++) {
+          DICT_ALBUMS[albumName][i] = DICT_ALBUMS[albumName][i - 1] + DICT_ALBUMS[albumName][i];
+        }
+      }
+
+      // Calculate cumulative sums for tracks
+      for (const trackName in DICT_TRACKS) {
+        for (let i = 1; i < DICT_TRACKS[trackName].length; i++) {
+          DICT_TRACKS[trackName][i] = DICT_TRACKS[trackName][i - 1] + DICT_TRACKS[trackName][i];
+        }
+      }
+
+      // Prepare artists data
+      const weeklyArtistsData = [];
       for (let i = 0; i < dateRanges.length; i++) {
         const weekData = [];
         
-        for (const artistName in DICT) {
-          if (DICT[artistName][i] > 0) {
+        for (const artistName in DICT_ARTISTS) {
+          if (DICT_ARTISTS[artistName][i] > 0) {
             weekData.push({
               name: artistName,
-              value: DICT[artistName][i]
+              value: DICT_ARTISTS[artistName][i]
             });
           }
         }
         
         weekData.sort((a, b) => b.value - a.value);
-        weeklyChartData.push({
+        weeklyArtistsData.push({
           date: dateRanges[i],
           artists: weekData.slice(0, 15)
         });
       }
 
-      setAllWeeksData(weeklyChartData);
-      if (weeklyChartData.length > 0) {
-        setChartData(weeklyChartData[0]);
+      // Prepare albums data (internal names keep artist prefix)
+      const weeklyAlbumsData = [];
+      for (let i = 0; i < dateRanges.length; i++) {
+        const weekData = [];
+        
+        for (const albumName in DICT_ALBUMS) {
+          if (DICT_ALBUMS[albumName][i] > 0) {
+            weekData.push({
+              name: albumName, // internal: "Artist - Album"
+              value: DICT_ALBUMS[albumName][i]
+            });
+          }
+        }
+        
+        weekData.sort((a, b) => b.value - a.value);
+        weeklyAlbumsData.push({
+          date: dateRanges[i],
+          artists: weekData.slice(0, 15) // still using 'artists' key for compatibility
+        });
+      }
+
+      // Prepare tracks data (internal names keep artist prefix)
+      const weeklyTracksData = [];
+      for (let i = 0; i < dateRanges.length; i++) {
+        const weekData = [];
+        
+        for (const trackName in DICT_TRACKS) {
+          if (DICT_TRACKS[trackName][i] > 0) {
+            weekData.push({
+              name: trackName, // internal: "Artist - Track"
+              value: DICT_TRACKS[trackName][i]
+            });
+          }
+        }
+        
+        weekData.sort((a, b) => b.value - a.value);
+        weeklyTracksData.push({
+          date: dateRanges[i],
+          artists: weekData.slice(0, 15) // still using 'artists' key for compatibility
+        });
+      }
+
+      setAllWeeksData(weeklyArtistsData);
+      setAllAlbumsData(weeklyAlbumsData);
+      setAllTracksData(weeklyTracksData);
+      
+      if (weeklyArtistsData.length > 0) {
+        setChartData(weeklyArtistsData[0]);
       }
       setLoading(false);
       setProgress('');
@@ -186,19 +335,20 @@ const LastFmRaceChart = () => {
   };
 
   const startAnimation = () => {
-    if (allWeeksData.length === 0) return;
+    const data = activeTab === 'artists' ? allWeeksData : activeTab === 'albums' ? allAlbumsData : allTracksData;
+    if (data.length === 0) return;
     
     setIsPlaying(true);
     
     const interval = setInterval(() => {
       setCurrentWeek(prev => {
         const next = prev + 1;
-        if (next >= allWeeksData.length) {
+        if (next >= data.length) {
           setIsPlaying(false);
           clearInterval(interval);
           return prev;
         }
-        setChartData(allWeeksData[next]);
+        setChartData(data[next]);
         return next;
       });
     }, 66);
@@ -215,19 +365,20 @@ const LastFmRaceChart = () => {
   };
 
   const resumeAnimation = () => {
-    if (allWeeksData.length === 0 || currentWeek >= allWeeksData.length - 1) return;
+    const data = activeTab === 'artists' ? allWeeksData : activeTab === 'albums' ? allAlbumsData : allTracksData;
+    if (data.length === 0 || currentWeek >= data.length - 1) return;
     
     setIsPlaying(true);
     
     const interval = setInterval(() => {
       setCurrentWeek(prev => {
         const next = prev + 1;
-        if (next >= allWeeksData.length) {
+        if (next >= data.length) {
           setIsPlaying(false);
           clearInterval(interval);
           return prev;
         }
-        setChartData(allWeeksData[next]);
+        setChartData(data[next]);
         return next;
       });
     }, 66);
@@ -246,6 +397,23 @@ const LastFmRaceChart = () => {
       fetchLastFmData();
     }
   };
+
+  const handleTabChange = (tab) => {
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      setAnimationInterval(null);
+    }
+    setIsPlaying(false);
+    setActiveTab(tab);
+    setCurrentWeek(0);
+    
+    const data = tab === 'artists' ? allWeeksData : tab === 'albums' ? allAlbumsData : allTracksData;
+    if (data.length > 0) {
+      setChartData(data[0]);
+    }
+  };
+
+  const currentData = activeTab === 'artists' ? allWeeksData : activeTab === 'albums' ? allAlbumsData : allTracksData;
 
   return (
     <div style={{ minHeight: '100vh', background: 'linear-gradient(to bottom right, #4c1d95, #1e3a8a, #312e81)', padding: '32px' }}>
@@ -302,7 +470,7 @@ const LastFmRaceChart = () => {
               marginBottom: '16px'
             }} />
             <p style={{ fontSize: '20px', fontWeight: '600' }}>Fetching your music data...</p>
-            {progress && <p style={{ fontSize: '14px', color: '#93c5fd', marginTop: '8px' }}>{progress}</p>}
+            {progress && <p style={{ fontSize: '14px', color: '#93c5fd', marginTop: '8px', whiteSpace: 'pre-line' }}>{progress}</p>}
           </div>
         )}
 
@@ -315,17 +483,70 @@ const LastFmRaceChart = () => {
 
         {chartData && !loading && (
           <div style={{ background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(12px)', borderRadius: '16px', padding: '32px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)' }}>
+            
+            {/* TABS */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', borderBottom: '2px solid rgba(255,255,255,0.2)', paddingBottom: '8px' }}>
+              <button
+                onClick={() => handleTabChange('artists')}
+                style={{
+                  padding: '12px 24px',
+                  background: activeTab === 'artists' ? '#3b82f6' : 'transparent',
+                  color: 'white',
+                  fontWeight: 'bold',
+                  borderRadius: '8px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  transition: 'all 0.3s'
+                }}
+              >
+                🎤 Artists
+              </button>
+              <button
+                onClick={() => handleTabChange('albums')}
+                style={{
+                  padding: '12px 24px',
+                  background: activeTab === 'albums' ? '#3b82f6' : 'transparent',
+                  color: 'white',
+                  fontWeight: 'bold',
+                  borderRadius: '8px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  transition: 'all 0.3s'
+                }}
+              >
+                💿 Albums
+              </button>
+              <button
+                onClick={() => handleTabChange('tracks')}
+                style={{
+                  padding: '12px 24px',
+                  background: activeTab === 'tracks' ? '#3b82f6' : 'transparent',
+                  color: 'white',
+                  fontWeight: 'bold',
+                  borderRadius: '8px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  transition: 'all 0.3s'
+                }}
+              >
+                🎵 Tracks
+              </button>
+            </div>
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
               <div style={{ color: 'white' }}>
                 <h2 style={{ fontSize: '30px', fontWeight: 'bold' }}>{chartData.date}</h2>
-                <p style={{ color: '#bfdbfe', fontSize: '18px' }}>Week {currentWeek + 1} of {allWeeksData.length}</p>
+                <p style={{ color: '#bfdbfe', fontSize: '18px' }}>Week {currentWeek + 1} of {currentData.length}</p>
               </div>
               <div style={{ display: 'flex', gap: '16px' }}>
                 {!isPlaying && currentWeek === 0 && (
                   <button
                     onClick={() => {
                       setCurrentWeek(0);
-                      setChartData(allWeeksData[0]);
+                      setChartData(currentData[0]);
                       startAnimation();
                     }}
                     style={{
@@ -342,7 +563,7 @@ const LastFmRaceChart = () => {
                     ▶ Play Animation
                   </button>
                 )}
-                {!isPlaying && currentWeek > 0 && currentWeek < allWeeksData.length - 1 && (
+                {!isPlaying && currentWeek > 0 && currentWeek < currentData.length - 1 && (
                   <button
                     onClick={resumeAnimation}
                     style={{
@@ -385,7 +606,7 @@ const LastFmRaceChart = () => {
                       }
                       setIsPlaying(false);
                       setCurrentWeek(0);
-                      setChartData(allWeeksData[0]);
+                      setChartData(currentData[0]);
                     }}
                     style={{
                       padding: '16px 32px',
@@ -409,7 +630,7 @@ const LastFmRaceChart = () => {
               <input
                 type="range"
                 min={0}
-                max={allWeeksData.length - 1}
+                max={currentData.length - 1}
                 value={currentWeek}
                 onChange={(e) => {
                   if (animationInterval) {
@@ -419,7 +640,7 @@ const LastFmRaceChart = () => {
                   setIsPlaying(false);
                   const week = parseInt(e.target.value);
                   setCurrentWeek(week);
-                  setChartData(allWeeksData[week]);
+                  setChartData(currentData[week]);
                 }}
                 style={{
                   width: '100%',
@@ -429,17 +650,24 @@ const LastFmRaceChart = () => {
                   cursor: 'pointer',
                   WebkitAppearance: 'none',
                   appearance: 'none',
-                  background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${((currentWeek / Math.max(1, allWeeksData.length - 1)) * 100)}%, rgba(255,255,255,0.2) ${((currentWeek / Math.max(1, allWeeksData.length - 1)) * 100)}%, rgba(255,255,255,0.2) 100%)`
+                  background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${((currentWeek / Math.max(1, currentData.length - 1)) * 100)}%, rgba(255,255,255,0.2) ${((currentWeek / Math.max(1, currentData.length - 1)) * 100)}%, rgba(255,255,255,0.2) 100%)`
                 }}
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', color: '#bfdbfe', fontSize: '13px' }}>
-                <span>Start: {allWeeksData[0]?.date}</span>
-                <span>End: {allWeeksData[allWeeksData.length - 1]?.date}</span>
+                <span>Start: {currentData[0]?.date}</span>
+                <span>End: {currentData[currentData.length - 1]?.date}</span>
               </div>
             </div>
 
             <div style={{ background: 'rgba(17, 24, 39, 0.5)', borderRadius: '12px', padding: '16px' }}>
-              <AnimatedBarChart data={chartData.artists} colors={colors} weekIndex={currentWeek} allWeeksData={allWeeksData} key={currentWeek === 0 ? `reset-${Date.now()}` : 'chart'} />
+              <AnimatedBarChart
+                data={chartData.artists}
+                colors={colors}
+                weekIndex={currentWeek}
+                allWeeksData={currentData}
+                displayMode={activeTab} // <-- new prop to select display behavior
+                key={currentWeek === 0 ? `reset-${Date.now()}` : 'chart'}
+              />
             </div>
           </div>
         )}
@@ -474,20 +702,18 @@ const LastFmRaceChart = () => {
   );
 };
 
-const AnimatedBarChart = ({ data, colors, weekIndex, allWeeksData }) => {
+const AnimatedBarChart = ({ data, colors, weekIndex, allWeeksData, displayMode = 'artists' }) => {
   const [prevData, setPrevData] = React.useState(data);
   const [artistColors, setArtistColors] = React.useState({});
   const maxValue = Math.max(...data.map(d => d.value), 1);
   const chartHeight = 700;
 
-  // Calculate gold medal weeks by looking back through history
   const goldMedalWeeks = React.useMemo(() => {
     const weeks = {};
     if (data.length > 0 && allWeeksData && weekIndex >= 0) {
       const currentGoldArtist = data[0].name;
       let consecutiveWeeks = 0;
       
-      // Count backwards from current week to find consecutive #1 weeks
       for (let i = weekIndex; i >= 0; i--) {
         if (allWeeksData[i].artists.length > 0 && allWeeksData[i].artists[0].name === currentGoldArtist) {
           consecutiveWeeks++;
@@ -501,7 +727,6 @@ const AnimatedBarChart = ({ data, colors, weekIndex, allWeeksData }) => {
     return weeks;
   }, [data, weekIndex, allWeeksData]);
 
-  // Assign persistent colors to artists
   React.useEffect(() => {
     setArtistColors(prev => {
       const newColors = { ...prev };
@@ -564,6 +789,19 @@ const AnimatedBarChart = ({ data, colors, weekIndex, allWeeksData }) => {
   const tickValues = calculateRoundTicks(maxValue);
   const chartMaxValue = tickValues[tickValues.length - 1];
 
+  // Helper: derive display label based on displayMode
+  const getDisplayLabel = (internalName) => {
+    if (displayMode === 'artists') {
+      return internalName; // show full artist name
+    }
+    // albums/tracks: internal names are "Artist - Name"
+    if (typeof internalName === 'string' && internalName.includes(' - ')) {
+      // return the part after the first ' - ' (album or track name)
+      return internalName.split(' - ').slice(1).join(' - ').trim();
+    }
+    return internalName;
+  };
+
   return (
     <>
       <style>{`
@@ -599,6 +837,8 @@ const AnimatedBarChart = ({ data, colors, weekIndex, allWeeksData }) => {
           else if (newIndex === 1) medal = '🥈 ';
           else if (newIndex === 2) medal = '🥉 ';
 
+          const displayLabel = getDisplayLabel(artist.name);
+
           return (
             <div
               key={artist.name}
@@ -616,7 +856,7 @@ const AnimatedBarChart = ({ data, colors, weekIndex, allWeeksData }) => {
             >
               <div style={{ width: '200px', paddingRight: '16px', textAlign: 'right' }}>
                 <span style={{ color: 'white', fontWeight: 'bold', fontSize: '14px', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {medal}{artist.name}
+                  {medal}{displayLabel}
                 </span>
                 {weeksText && (
                   <span style={{ color: '#FFD700', fontSize: '11px', fontWeight: 'bold' }}>
